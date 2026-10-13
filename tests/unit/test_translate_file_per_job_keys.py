@@ -6,8 +6,9 @@ TXT/SRT adapter path built `llm_config` and the DOCX path called
 `create_llm_provider` without `nim_api_key`, so with `llm_provider='nim'`, a
 per-job NIM key and no NIM key in `.env`, the factory raised "NVIDIA NIM
 provider requires an API key": a TXT/SRT job failed mid-run (the key was
-silently dropped) and a DOCX job failed at provider creation. The key is now
-threaded at both call sites, matching the EPUB path.
+silently dropped) and a DOCX job failed at provider creation. The PDF path,
+added later, had the same omission. The key is now threaded at every call
+site, matching the EPUB path.
 
 The tests drive the real entry point with the real factory (its `_require_key`
 gate decides pass/fail); only the network boundary (`provider.generate`) is
@@ -72,6 +73,10 @@ def _patch_boundaries(monkeypatch):
 
     monkeypatch.setattr(OpenAICompatibleProvider, "generate", fake_generate)
     monkeypatch.delenv("NIM_API_KEY", raising=False)
+    # The factory falls back to the import-time constant read from `.env`;
+    # blank it so a developer's local NIM key cannot mask a dropped kwarg.
+    import src.core.llm.factory as factory_module
+    monkeypatch.setattr(factory_module, "NIM_API_KEY", "")
 
     real_create = llm_client_module.create_llm_provider
     factory_calls = []
@@ -168,6 +173,47 @@ async def test_docx_forwards_the_per_job_nim_key(tmp_path, cm, monkeypatch):
     # The DOCX call site forwards every per-job provider key, not just NIM.
     for key in ALL_JOB_KEYS:
         assert key in kwargs, f"{key} dropped from the DOCX provider call"
+    assert kwargs["nim_api_key"] == JOB_KEY
+
+
+@pytest.mark.asyncio
+async def test_pdf_forwards_the_per_job_nim_key(tmp_path, cm, monkeypatch):
+    pymupdf = pytest.importorskip("pymupdf")
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text(
+        (72, 100), "Hello world, this is a short line.",
+        fontsize=11, fontname="helv",
+    )
+    src = tmp_path / "in.pdf"
+    doc.save(str(src))
+    doc.close()
+    assert detect_file_type(str(src)) == "pdf"
+
+    factory_calls = _patch_boundaries(monkeypatch)
+
+    from src.core.adapters.translate_file import translate_file
+
+    # Without the kwarg this raises ValueError at provider creation.
+    result = await translate_file(
+        input_filepath=str(src),
+        output_filepath=str(tmp_path / "out.pdf"),
+        source_language="English",
+        target_language="French",
+        model_name="moonshotai/kimi-k2-instruct-0905",
+        llm_provider="nim",
+        checkpoint_manager=cm,
+        translation_id="job-pdf",
+        nim_api_key=JOB_KEY,
+    )
+
+    assert result is True
+    provider_type, kwargs = factory_calls[0]
+    assert provider_type == "nim"
+    # The PDF call site forwards every per-job provider key, not just NIM.
+    for key in ALL_JOB_KEYS:
+        assert key in kwargs, f"{key} dropped from the PDF provider call"
     assert kwargs["nim_api_key"] == JOB_KEY
 
 
