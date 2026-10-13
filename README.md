@@ -65,7 +65,7 @@ That's it (就这么简单 · これだけ · 이게 다예요). On first launch
 | **NVIDIA NIM** | Cloud | [build.nvidia.com](https://build.nvidia.com/) |
 | **Ollama** | Local | [ollama.com](https://ollama.com/) |
 | **OpenAI** | Cloud | [platform.openai.com](https://platform.openai.com/api-keys) |
-| **OpenAI-Compatible** | Local (llama.cpp, LM Studio, vLLM, LocalAI...) | Point to your server's endpoint |
+| **OpenAI-Compatible** | Local or hosted (llama.cpp, LM Studio, vLLM, LocalAI...) | Point to your server's endpoint |
 | **OpenRouter** | Cloud (200+ models) | [openrouter.ai/keys](https://openrouter.ai/keys) |
 | **Poe** | Cloud (multi-model) | [poe.com/api_key](https://poe.com/api_key) |
 
