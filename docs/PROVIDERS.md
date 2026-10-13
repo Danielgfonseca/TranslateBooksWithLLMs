@@ -37,9 +37,9 @@ python translate.py -i book.txt -o book_fr.txt -m qwen3:14b
 
 ---
 
-## OpenAI-Compatible Servers (Local)
+## OpenAI-Compatible Servers (Local or Hosted)
 
-TBL supports any server that implements the OpenAI API format. This includes:
+TBL supports local and hosted endpoints that implement the OpenAI Chat Completions API. This includes:
 
 - **llama.cpp** (`llama-server`) - Lightweight, direct model serving
 - **LM Studio** - Desktop app with GUI
@@ -49,11 +49,11 @@ TBL supports any server that implements the OpenAI API format. This includes:
 
 ### Setup
 
-1. Start your OpenAI-compatible server
+1. Start your local server or obtain access to a hosted compatible endpoint
 2. In TBL:
    - Select "OpenAI-Compatible" provider
-   - Set endpoint to your server URL (see table below)
-   - Leave API key empty (local servers don't require it)
+   - Set the full `/v1/chat/completions` endpoint URL (local examples below)
+   - Enter an API key if that endpoint requires one; leave it empty only when authentication is disabled
 
 | Server | Default Endpoint |
 |--------|------------------|
