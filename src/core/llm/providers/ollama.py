@@ -11,8 +11,9 @@ import json
 import re
 import httpx
 
-from ..base import LLMProvider, LLMResponse
-from ..exceptions import ContextOverflowError, RepetitionLoopError
+from ..base import LLMProvider, LLMResponse, is_output_limit_finish
+from ..exceptions import ContextOverflowError, RateLimitError, RepetitionLoopError
+from ..rate_limit_handler import compute_wait_time
 from ..thinking.cache import get_thinking_cache
 from ..thinking.detection import detect_repetition_loop
 from ..thinking.behavior import ThinkingBehavior, _model_matches_pattern
@@ -303,6 +304,7 @@ class OllamaProvider(LLMProvider):
                 prompt_tokens = 0
                 completion_tokens = 0
                 exceeded_context = False
+                done_reason = None
 
                 # Calculate safe limit for completion tokens
                 # Reserve space for prompt (we'll get actual count from first chunk)
@@ -400,6 +402,7 @@ class OllamaProvider(LLMProvider):
                                 # Get final token counts
                                 prompt_tokens = chunk_data.get("prompt_eval_count", prompt_tokens)
                                 completion_tokens = chunk_data.get("eval_count", completion_tokens)
+                                done_reason = chunk_data.get("done_reason")
                                 break
                     finally:
                         # Ensure the stream is properly closed and all data is consumed
@@ -496,7 +499,9 @@ class OllamaProvider(LLMProvider):
                     completion_tokens=effective_completion_tokens,  # Use effective count (includes thinking estimate)
                     context_used=context_used,
                     context_limit=self.context_window,
-                    was_truncated=was_truncated
+                    was_truncated=was_truncated,
+                    finish_reason=done_reason,
+                    output_truncated=is_output_limit_finish(done_reason)
                 )
 
             except httpx.TimeoutException as e:
@@ -551,6 +556,33 @@ class OllamaProvider(LLMProvider):
                             error_message = e.response.text.strip() or str(e)
                         except Exception:
                             pass
+
+                # Handle rate limits (HTTP 429) before anything else: Ollama Cloud
+                # enforces a monthly quota, so retrying cannot clear it. Raise
+                # immediately so the pipeline pauses and checkpoints (issue #279).
+                if e.response is not None and e.response.status_code == 429:
+                    headers = e.response.headers
+                    hinted = any(
+                        header in headers
+                        for header in ("Retry-After", "retry-after",
+                                       "X-RateLimit-Reset", "x-ratelimit-reset")
+                    )
+                    # Without a server hint, leave retry_after unset: the header-less
+                    # fallback (a few seconds) would hammer an exhausted monthly quota,
+                    # while None lets the caller use its own auto-resume delay.
+                    retry_after = compute_wait_time(headers, 0) if hinted else None
+
+                    if self.log_callback:
+                        self.log_callback("llm_rate_limit",
+                            f"{YELLOW}⚠️ Rate limit reached (HTTP 429){RESET}\n"
+                            f"{YELLOW}   Model: {self.model}{RESET}\n"
+                            f"{YELLOW}   Error: {error_message}{RESET}\n"
+                            f"{YELLOW}   Translation is being paused - a checkpoint is saved so you can resume later{RESET}")
+                    else:
+                        print(f"{YELLOW}Rate limit reached (HTTP 429): {error_message}{RESET}")
+                        print(f"{YELLOW}Translation is being paused - a checkpoint is saved so you can resume later{RESET}")
+
+                    raise RateLimitError(error_message, retry_after=retry_after, provider="ollama")
 
                 # Handle context overflow errors
                 if any(keyword in error_message.lower()

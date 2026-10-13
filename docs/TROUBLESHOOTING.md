@@ -12,7 +12,9 @@ Solutions to common problems with TranslateBookWithLLM.
 - [Performance Issues](#performance-issues)
 - [Thinking Models](#thinking-models)
 - [EPUB Issues](#epub-issues)
+- [TXT Issues](#txt-issues)
 - [SRT Issues](#srt-issues)
+- [PDF Issues](#pdf-issues)
 - [Style Preset Issues](#style-preset-issues)
 - [Web Interface Issues](#web-interface-issues)
 - [Configuration Issues](#configuration-issues)
@@ -266,6 +268,31 @@ Some models (DeepSeek R1, Qwen3, QwQ, etc.) produce internal reasoning within `<
 
 ---
 
+## TXT Issues
+
+### "Part of the book is missing from the translation"
+
+**Cause**: A chunk came back shorter than its source. The model hit its output token limit, or skipped or summarized a passage.
+
+**What the app does now**:
+1. Chinese and Japanese text is split on full-width punctuation (`。！？`), and files with one paragraph per line (no blank lines) are split line by line, so no chunk goes past `MAX_TOKENS_PER_CHUNK`
+2. A response the provider marks as stopped at the output limit (`finish_reason: length`) fails the chunk instead of being saved half-translated
+3. A translation with fewer tokens than `MIN_TRANSLATION_LENGTH_RATIO` (default `0.25`) times the source is retried, then the chunk is marked failed. The job ends `partial` and can be resumed
+4. A failed chunk keeps its source text in the output, so a gap is always visible
+
+**Solutions**:
+1. Resume the job to retry the failed chunks
+2. For reasoning models, disable reasoning so it does not use up the output budget
+3. Lower `MAX_TOKENS_PER_CHUNK` if the model often stops early
+
+### "Was this odd word in the model's output?"
+
+Set `SAVE_RAW_LLM_RESPONSES=true` in `.env`. Each raw model response of a TXT or SRT job, before tag extraction, is then appended to `data/raw_responses/<translation_id>.jsonl`, with the chunk index, attempt number, token counts and finish reason. The TXT pipeline writes the extracted text as is, with no post-processing, so a word found in the raw response came from the model.
+
+The per-chunk source and extracted translation are also kept in `data/jobs.db` (`checkpoint_chunks` table).
+
+---
+
 ## SRT Issues
 
 ### "Timing desynchronized"
@@ -285,6 +312,28 @@ Some models (DeepSeek R1, Qwen3, QwQ, etc.) produce internal reasoning within `<
 1. The system preserves subtitle structure automatically
 2. Try a larger model with better instruction-following
 3. Reduce `SRT_LINES_PER_BLOCK` for simpler chunks
+
+---
+
+## PDF Issues
+
+### "This PDF has no extractable text layer"
+
+**Cause**: The PDF is a scan (its pages are images). OCR is not supported.
+
+**Solution**: Run the file through an OCR tool (for example `ocrmypdf`) to add a text layer, then translate the OCR'd PDF.
+
+### "This PDF is password-protected"
+
+**Solution**: Open it with its password, save an unprotected copy, and translate that copy.
+
+### "The translated PDF does not look like the original"
+
+**Cause**: PDF output is a new, reflowed document, not an in-place translation. Headings, paragraphs, lists, images, ruled tables, paragraph colours, background boxes and the font family (serif, sans-serif, monospace) are kept. The original page positions, multi-column layouts, bold or colour inside a sentence, borderless tables and merged table cells are not reproduced.
+
+**Solutions**:
+1. If a table came out as plain paragraphs, it probably has no ruling lines: this is a known limit.
+2. If you need the exact original layout, translate the source document (DOCX, EPUB) instead of its PDF export.
 
 ---
 
@@ -318,7 +367,7 @@ See [docs/STYLE_EXTRACTION.md](STYLE_EXTRACTION.md) for the full guide.
 **Cause**: File too large or wrong format.
 
 **Solutions**:
-1. Check file format: `.txt`, `.epub`, `.srt`, `.docx`
+1. Check file format: `.txt`, `.epub`, `.srt`, `.docx`, `.pdf`
 2. Check file size limits
 3. Try a smaller file first
 4. Check directory permissions: `data/uploads/` must be writable
@@ -489,6 +538,6 @@ The system uses structured logging with types:
 - Python version
 - LLM provider and model used
 - Error message (full traceback if available)
-- File type (EPUB, TXT, SRT)
+- File type (EPUB, DOCX, PDF, TXT, SRT)
 - Relevant `.env` settings (without API keys)
 - Debug logs if available

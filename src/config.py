@@ -359,6 +359,12 @@ MIN_CHUNK_SIZE_TOKENS = 50
 # DEEPSEEK_API_KEY/MODEL, POE_API_KEY/MODEL, NIM_API_KEY/MODEL are loaded via
 # _apply_reloadable_env_settings() so reload_config() can refresh them at runtime.
 OPENROUTER_API_ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions'
+# Many OpenRouter models reason by default (DeepSeek V4.x, Qwen 3.x), and the
+# reasoning tokens are billed as output. The provider sends OpenRouter's unified
+# `reasoning` parameter to turn it off, or to the lowest effort on models where
+# reasoning is mandatory, using the metadata /api/v1/models advertises.
+# Set to 'false' to keep each model's default reasoning.
+OPENROUTER_DISABLE_THINKING = os.getenv('OPENROUTER_DISABLE_THINKING', 'true').lower() == 'true'
 MISTRAL_API_ENDPOINT = os.getenv('MISTRAL_API_ENDPOINT', 'https://api.mistral.ai/v1/chat/completions')
 DEEPSEEK_API_ENDPOINT = os.getenv('DEEPSEEK_API_ENDPOINT', 'https://api.deepseek.com/chat/completions')
 # DeepSeek V4 models (deepseek-v4-flash, deepseek-v4-pro) enable thinking by default,
@@ -391,6 +397,24 @@ SRT_LINES_PER_BLOCK = int(os.getenv('SRT_LINES_PER_BLOCK', '10'))
 # Total attempts = 1 + this value. After exhaustion the unit keeps its
 # best-effort content and is marked failed (job ends 'partial', retryable).
 UNIT_VALIDATION_RETRIES = int(os.getenv('UNIT_VALIDATION_RETRIES', '2'))
+
+# Completeness check for plain-text units (TXT). A translation whose token count
+# falls below this ratio of the source's is treated as incomplete (the model
+# skipped or summarized part of the chunk) and goes through the same
+# retry-then-fail path as other validation failures. Deliberately loose: token
+# ratios vary by script (Thai or Korean into English can land near 0.3), and it
+# only has to catch whole passages going missing. Set to 0 to disable.
+MIN_TRANSLATION_LENGTH_RATIO = float(os.getenv('MIN_TRANSLATION_LENGTH_RATIO', '0.25'))
+# Units whose source is shorter than this (in tokens) are not ratio-checked:
+# headings and one-liners legitimately change length a lot.
+MIN_TOKENS_FOR_LENGTH_CHECK = int(os.getenv('MIN_TOKENS_FOR_LENGTH_CHECK', '100'))
+
+# Write every raw LLM response (before tag extraction) to
+# data/raw_responses/<translation_id>.jsonl, one JSON object per LLM call.
+# Lets you tell whether an odd word was already in the model's output or was
+# introduced later. TXT and SRT jobs only. Off by default: the file holds the
+# full model output, reasoning included, and grows with the book.
+SAVE_RAW_LLM_RESPONSES = os.getenv('SAVE_RAW_LLM_RESPONSES', 'false').lower() == 'true'
 
 # Translation Attribution
 # This adds a discrete attribution to your translations (metadata and end page for EPUB, footer for TXT, comment for SRT)
@@ -622,6 +646,15 @@ def detect_format_from_placeholder(sample_placeholder: str) -> str:
 
 # Sentence terminators
 SENTENCE_TERMINATORS = tuple(list(".!?") + ['."', '?"', '!"', '."', ".'", "?'", "!'", ":", ".)"])
+# Full-width CJK terminators (Chinese, Japanese), with the closing quotes that
+# commonly follow them. Without these a CJK paragraph never splits at sentence
+# level and an oversized paragraph is sent to the LLM as one huge chunk.
+SENTENCE_TERMINATORS = SENTENCE_TERMINATORS + (
+    "。", "！", "？",                      # 。 ！ ？
+    "。”", "！”", "？”",  # 。” ！” ？”
+    "。」", "！」", "？」",  # 。」 ！」 ？」
+    "。』", "！』", "？』",  # 。』 ！』 ？』
+)
 
 # EPUB-specific configuration
 NAMESPACES = {

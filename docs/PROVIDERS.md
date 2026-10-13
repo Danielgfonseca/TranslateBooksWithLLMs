@@ -25,6 +25,10 @@ Runs models locally on your machine.
 
 Browse models: [ollama.com/search](https://ollama.com/search)
 
+### Cloud models
+
+`-cloud` models (e.g. `gemma3:27b-cloud`) are not run locally — the local Ollama daemon relays them to Ollama's hosted infrastructure using the account signed in with `ollama signin`. Once that account's usage limit is reached, the daemon returns HTTP 429. TBL pauses the job and saves a checkpoint, so you can resume once the quota resets or you add credits. The **"Don't auto-pause on rate limit (HTTP 429)"** setting is the opt-out: enable it and TBL waits and auto-resumes instead of pausing.
+
 ### CLI Example
 
 ```bash
@@ -33,9 +37,9 @@ python translate.py -i book.txt -o book_fr.txt -m qwen3:14b
 
 ---
 
-## OpenAI-Compatible Servers (Local)
+## OpenAI-Compatible Servers (Local or Hosted)
 
-TBL supports any server that implements the OpenAI API format. This includes:
+TBL supports local and hosted endpoints that implement the OpenAI Chat Completions API. This includes:
 
 - **llama.cpp** (`llama-server`) - Lightweight, direct model serving
 - **LM Studio** - Desktop app with GUI
@@ -45,11 +49,13 @@ TBL supports any server that implements the OpenAI API format. This includes:
 
 ### Setup
 
-1. Start your OpenAI-compatible server
+1. Start your local server or obtain access to a hosted compatible endpoint
 2. In TBL:
    - Select "OpenAI-Compatible" provider
-   - Set endpoint to your server URL (see table below)
-   - Leave API key empty (local servers don't require it)
+   - Set the endpoint URL (local examples below). A base URL ending in `/v1` is completed to `/v1/chat/completions` automatically; any other path is used as-is
+   - Enter an API key if that endpoint requires one; leave it empty only when authentication is disabled
+
+> **Hosted endpoints in the web UI:** the server only calls hosts on its [endpoint allowlist](#endpoint-allowlist). Local and LAN servers are accepted out of the box, but a public hostname is rejected with HTTP 400 until you add it to `LLM_ENDPOINT_ALLOWLIST` in `.env` (or set it as `OPENAI_API_ENDPOINT`). The CLI does not apply this check.
 
 | Server | Default Endpoint |
 |--------|------------------|
@@ -84,7 +90,7 @@ Access to 200+ models from multiple providers through a single API.
 
 1. Get API key at [openrouter.ai/keys](https://openrouter.ai/keys)
 2. In TBL: Select "OpenRouter", enter your key
-3. Choose a model from the list
+3. Choose a model from the list (your [presets](#presets) appear first)
 
 ### CLI Example
 
@@ -96,6 +102,47 @@ python translate.py -i book.txt -o book_fr.txt \
 ```
 
 Browse models and pricing: [openrouter.ai/models](https://openrouter.ai/models)
+
+### Presets
+
+An OpenRouter [preset](https://openrouter.ai/docs/guides/features/presets) is a named configuration
+saved on [openrouter.ai/settings/presets](https://openrouter.ai/settings/presets): a system prompt,
+a model with fallback models, provider routing (preferred or excluded providers, data policy,
+quantization), sampling parameters and reasoning settings. You use one by sending
+`@preset/<slug>` as the model.
+
+Presets are worth using with TBL because they expose OpenRouter options that TBL has no UI or CLI
+flag for. Provider routing and model fallbacks are configured only there. A preset is also edited
+on OpenRouter's site, so you can tune it without touching TBL, and the same configuration works in
+every tool that uses your OpenRouter account.
+
+When TBL loads the OpenRouter model list, it also calls `GET /api/v1/presets` with the same API key
+and lists your active presets first, as `@preset/<slug>` (the preset description is the tooltip).
+Type `preset` or part of the slug in the model search to find them. On the CLI, pass the preset as
+the model:
+
+```bash
+python translate.py -i book.txt -o book_fr.txt \
+    --provider openrouter \
+    -m @preset/my-translation-preset
+```
+
+Notes:
+- TBL does not send its reasoning override for a preset, so the preset's own reasoning setting
+  applies (see [Reasoning](#reasoning)).
+- Presets have no fixed price, so the cost estimate shows pricing as unknown. You can enter a
+  price by hand in the cost panel.
+- If the preset list cannot be fetched, the regular model list still loads and a warning is logged.
+
+### Reasoning
+
+Many OpenRouter models reason by default (DeepSeek V4.x at effort `high`, Qwen 3.x), and reasoning
+tokens are billed as output: DeepSeek V4.1 Flash was seen producing 4,700 to 31,000 output tokens
+for translation chunks of about 3,000 input tokens. TBL reads each model's reasoning metadata from
+`/api/v1/models` and sends OpenRouter's unified `reasoning` parameter (except for presets): `{"enabled": false}` when
+reasoning can be turned off, or the lowest supported effort on models where it is mandatory (a
+warning is logged for those). The per-request log line shows the reasoning token count whenever
+the model reports one. `OPENROUTER_DISABLE_THINKING=false` keeps each model's default.
 
 ---
 

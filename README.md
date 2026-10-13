@@ -1,8 +1,8 @@
+
+https://github.com/user-attachments/assets/4afc5f90-18d8-4586-ba73-626ae681ba57
 <div align="center">
   <h1>TBL - Translate Books with LLMs</h1>
-</div>
-
-<div align="center">
+  <p>翻译书籍 · 本を翻訳する · 책을 번역하다 · किताबों का अनुवाद · Перевод книг · แปลหนังสือ · Μετάφραση βιβλίων · ترجمة الكتب</p>
 
 [![Download Windows](https://img.shields.io/badge/Download-Windows-blue?style=for-the-badge&logo=windows)](https://github.com/hydropix/TranslateBooksWithLLMs/releases/latest/download/TranslateBook-Windows.zip) [![Download macOS Intel](https://img.shields.io/badge/Download-macOS%20Intel-black?style=for-the-badge&logo=apple)](https://github.com/hydropix/TranslateBooksWithLLMs/releases/latest/download/TranslateBook-macOS-Intel.zip) [![Download macOS Apple Silicon](https://img.shields.io/badge/Download-macOS%20M1%2FM2%2FM3%2FM4-black?style=for-the-badge&logo=apple)](https://github.com/hydropix/TranslateBooksWithLLMs/releases/latest/download/TranslateBook-macOS-AppleSilicon.zip)
 
@@ -10,13 +10,14 @@
 
 A desktop app that translates **books**, **subtitles**, and **documents** with AI - local or cloud. Drop a file, pick a language, get the result.
 
-**Formats:** EPUB, SRT, DOCX, TXT
+**Formats:** EPUB, SRT, DOCX, PDF, TXT
 
 - **No size limit.** Process documents of any length - from a single page to thousand-page novels. The intelligent chunking system handles unlimited content while preserving context between segments.
 - **Perfect preservation.** Your documents come out exactly as they went in: EPUB formatting, styles, and structure remain intact. SRT timecodes stay perfectly synchronized. Every tag, every timestamp, every formatting detail is preserved.
 - **Resume anytime.** Interrupted translation? Pick up exactly where you left off. The checkpoint system saves progress automatically.
 - **Reusable writing styles.** Extract a style preset from sample books (or write one by hand) and apply it to every chunk for a consistent register, rhythm, and imagery across the whole translation.
 - **Auto glossary & style.** No glossary or preset ready? Pick Auto in the dropdown and the app derives both straight from the document being translated - one extra LLM call each before the job starts, nothing saved.
+- **PDF support.** Text PDFs are translated into a new, reflowed PDF: headings, paragraphs, lists and images are kept, ruled tables are rebuilt as tables, and paragraph colours, background boxes and the font family (serif, sans-serif, monospace) are preserved, but the original page layout is not, and bold or colour inside a sentence is not. Scanned PDFs are not supported (no OCR), multi-column layouts are best effort, and the refinement pass is not available for PDF yet.
 
 <img width="1150" height="579" alt="image" src="https://github.com/user-attachments/assets/d7dfa806-830b-4405-8300-f10208943d22" />
 
@@ -32,7 +33,7 @@ A desktop app that translates **books**, **subtitles**, and **documents** with A
 3. **Run** `TranslateBook.exe` (Windows) or `./TranslateBook` (macOS).
 4. **Open** http://localhost:5000 in your browser.
 
-That's it. On first launch, you choose a translation provider:
+That's it (就这么简单 · これだけ · 이게 다예요). On first launch, you choose a translation provider:
 
 - **Free & local** - Install [Ollama](https://ollama.com/) and pull a model (e.g. `ollama pull qwen3:14b`). Nothing leaves your machine.
 - **Cloud (often free tier available)** - Paste an API key from one of the providers below.
@@ -64,7 +65,7 @@ That's it. On first launch, you choose a translation provider:
 | **NVIDIA NIM** | Cloud | [build.nvidia.com](https://build.nvidia.com/) |
 | **Ollama** | Local | [ollama.com](https://ollama.com/) |
 | **OpenAI** | Cloud | [platform.openai.com](https://platform.openai.com/api-keys) |
-| **OpenAI-Compatible** | Local (llama.cpp, LM Studio, vLLM, LocalAI...) | Point to your server's endpoint |
+| **OpenAI-Compatible** | Local or hosted (llama.cpp, LM Studio, vLLM, LocalAI...) | Point to your server's endpoint |
 | **OpenRouter** | Cloud (200+ models) | [openrouter.ai/keys](https://openrouter.ai/keys) |
 | **Poe** | Cloud (multi-model) | [poe.com/api_key](https://poe.com/api_key) |
 
@@ -241,6 +242,8 @@ Two things stay local to the device: if you queue several files, other devices o
 If TBL saves you time, you can support its development on Ko-fi:
 
 <a href="https://ko-fi.com/Y1M021FYBG" target="_blank"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support me on Ko-fi" height="36"></a>
+
+Thank you · 谢谢 · ありがとう · 감사합니다 · धन्यवाद · Спасибо · ขอบคุณ · Ευχαριστώ · شكرًا
 
 ---
 

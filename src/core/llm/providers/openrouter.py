@@ -9,6 +9,10 @@ Features:
     - Built-in cost tracking
     - Model validation
     - Automatic context size detection
+    - Reasoning disabled by default (translation-friendly), per model metadata
+    - Account presets (@preset/<slug>) listed with the models. Presets hold
+      settings TBL has no options for (provider routing, model fallbacks),
+      edited on openrouter.ai
 """
 
 from typing import List, Optional, Dict, Any, Callable, Union
@@ -16,8 +20,10 @@ import httpx
 import asyncio
 import json
 
-from src.config import REQUEST_TIMEOUT, MAX_TRANSLATION_ATTEMPTS
-from ..base import LLMProvider, LLMResponse
+from src.config import (
+    REQUEST_TIMEOUT, MAX_TRANSLATION_ATTEMPTS, OPENROUTER_DISABLE_THINKING
+)
+from ..base import LLMProvider, LLMResponse, is_output_limit_finish
 from ..exceptions import ContextOverflowError
 from ..rate_limit_handler import handle_rate_limit, is_retryable_http_status
 
@@ -57,6 +63,12 @@ class OpenRouterProvider(LLMProvider):
     # OpenRouter API endpoints
     API_URL = "https://openrouter.ai/api/v1/chat/completions"
     MODELS_URL = "https://openrouter.ai/api/v1/models"
+    PRESETS_URL = "https://openrouter.ai/api/v1/presets"
+
+    # Presets are referenced as a model string: "@preset/<slug>"
+    PRESET_PREFIX = "@preset/"
+    PRESETS_PAGE_SIZE = 100  # API maximum
+    PRESETS_MAX_PAGES = 10
 
     # Session cost tracking (class-level)
     _session_cost = 0.0
@@ -81,15 +93,137 @@ class OpenRouterProvider(LLMProvider):
         "anthropic/claude-3-5-sonnet-20241022",
     ]
 
-    def __init__(self, api_key: Union[str, List[str]], model: str = "anthropic/claude-sonnet-4"):
+    # --- Reasoning override ------------------------------------------------
+    # OpenRouter exposes one unified `reasoning` request parameter, and
+    # /api/v1/models describes each model's reasoning support:
+    #   "reasoning": {"mandatory": bool, "default_enabled": bool,
+    #                 "supported_efforts": [...], "default_effort": "..."}
+    # plus "reasoning" in `supported_parameters`. Many models reason by default
+    # (DeepSeek V4.x at effort "high", Qwen 3.x), which multiplies billed output
+    # tokens for no gain on translation. Mandatory-reasoning models reject a
+    # disable request, so they get their lowest supported effort instead.
+
+    # Effort levels ordered least-thinking first.
+    REASONING_EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+    # Model catalog entries, fetched once per process: {model_id: model_dict}
+    _model_catalog: Optional[Dict[str, Dict[str, Any]]] = None
+    _model_catalog_failed = False
+    _model_catalog_lock: Optional[asyncio.Lock] = None
+    # Resolved override per model: {model_id: reasoning dict, or {} for none}
+    _reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+
+    def __init__(
+        self,
+        api_key: Union[str, List[str]],
+        model: str = "anthropic/claude-sonnet-4",
+        disable_thinking: bool = OPENROUTER_DISABLE_THINKING
+    ):
         """
         Initialize the OpenRouter provider.
 
         Args:
             api_key: OpenRouter API key
             model: Model identifier (default: anthropic/claude-sonnet-4)
+            disable_thinking: Turn reasoning off (or down to the lowest effort
+                on models where it is mandatory). Reasoning tokens are billed
+                as output: DeepSeek V4.1 Flash was seen producing 4.7k-31k
+                output tokens for ~3k-token translation chunks with it on.
         """
         super().__init__(model, api_keys=api_key, provider_name="openrouter")
+        self.disable_thinking = disable_thinking
+        self._warned_reasoning_tokens = False
+
+    async def _load_model_catalog(self) -> Optional[Dict[str, Dict[str, Any]]]:
+        """
+        Fetch OpenRouter's model catalog (reasoning metadata included).
+
+        Fetched once per process and cached class-side. Returns None when the
+        catalog is unreachable, which means "unknown" and not "no models".
+        """
+        if OpenRouterProvider._model_catalog is not None:
+            return OpenRouterProvider._model_catalog
+        if OpenRouterProvider._model_catalog_failed:
+            return None
+
+        # Safe to create here without a double-check race: no await between the
+        # test and the assignment, so the event loop cannot interleave.
+        if OpenRouterProvider._model_catalog_lock is None:
+            OpenRouterProvider._model_catalog_lock = asyncio.Lock()
+
+        async with OpenRouterProvider._model_catalog_lock:
+            if OpenRouterProvider._model_catalog is not None:
+                return OpenRouterProvider._model_catalog
+            if OpenRouterProvider._model_catalog_failed:
+                return None
+            try:
+                client = await self._get_client()
+                response = await client.get(
+                    self.MODELS_URL,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    timeout=30
+                )
+                response.raise_for_status()
+                OpenRouterProvider._model_catalog = {
+                    m["id"]: m for m in response.json().get("data", []) if m.get("id")
+                }
+                return OpenRouterProvider._model_catalog
+            except Exception as e:
+                print(f"[OpenRouter] WARN: could not read the model catalog ({e}); "
+                      f"reasoning stays at the model default")
+                OpenRouterProvider._model_catalog_failed = True
+                return None
+
+    def _pick_reasoning_override(self, model_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Map a model's catalog entry to the `reasoning` value translation wants."""
+        if "reasoning" not in (model_info.get("supported_parameters") or []):
+            return {}
+
+        reasoning = model_info.get("reasoning") or {}
+        if not reasoning.get("mandatory"):
+            return {"enabled": False}
+
+        # Mandatory reasoning: disabling is rejected, so ask for the lowest
+        # effort the model advertises. Without an effort list, leave its default.
+        supported = reasoning.get("supported_efforts") or []
+        for effort in self.REASONING_EFFORT_ORDER[1:]:
+            if effort in supported:
+                return {"effort": effort}
+        return {}
+
+    async def _get_reasoning_override(self) -> Dict[str, Any]:
+        """Return the `reasoning` request value for this model ({} = send none)."""
+        if not self.disable_thinking:
+            return {}
+
+        # A preset carries its own model and reasoning config; don't override it.
+        if self.model.startswith(self.PRESET_PREFIX):
+            return {}
+
+        cached = OpenRouterProvider._reasoning_overrides.get(self.model)
+        if cached is not None:
+            return dict(cached)
+
+        catalog = await self._load_model_catalog()
+        if catalog is None:
+            return {}
+
+        model_info = catalog.get(self.model)
+        if model_info is None:
+            print(f"[OpenRouter] WARN: '{self.model}' is not in the model catalog; "
+                  f"reasoning stays at the model default")
+            override = {}
+        else:
+            override = self._pick_reasoning_override(model_info)
+            if (model_info.get("reasoning") or {}).get("mandatory"):
+                print(f"[OpenRouter] WARN: '{self.model}' always reasons and cannot "
+                      f"turn it off; reasoning tokens are billed as output "
+                      f"(requested: {override or 'model default'})")
+            elif override:
+                print(f"[OpenRouter] {self.model}: reasoning disabled")
+
+        OpenRouterProvider._reasoning_overrides[self.model] = override
+        return dict(override)
 
     @classmethod
     def get_session_cost(cls) -> tuple:
@@ -195,11 +329,66 @@ class OpenRouterProvider(LLMProvider):
             if len(filtered_models) < 5:
                 return self._get_fallback_models()
 
-            return filtered_models
+            # The key's presets go first: they are the user's own configurations
+            return await self.get_presets() + filtered_models
 
         except Exception as e:
             print(f"[OpenRouter] WARN: Failed to fetch models: {e}")
             return self._get_fallback_models()
+
+    async def get_presets(self) -> list:
+        """
+        Fetch the active presets visible to this API key.
+
+        Each preset is returned in the same shape as a model entry, with
+        id "@preset/<slug>", so it can be selected and sent as the model.
+        Failures are non-fatal: the model list is still usable without presets.
+
+        Returns:
+            List of preset dicts sorted by id (empty on error or when none)
+        """
+        if not self.api_key:
+            return []
+
+        presets = []
+        try:
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            client = await self._get_client()
+
+            for page in range(self.PRESETS_MAX_PAGES):
+                response = await client.get(
+                    self.PRESETS_URL,
+                    headers=headers,
+                    params={"limit": self.PRESETS_PAGE_SIZE,
+                            "offset": page * self.PRESETS_PAGE_SIZE},
+                    timeout=15
+                )
+                response.raise_for_status()
+                body = response.json()
+                page_data = body.get("data", [])
+
+                for preset in page_data:
+                    slug = preset.get("slug")
+                    if not slug or preset.get("status", "active") != "active":
+                        continue
+                    preset_id = f"{self.PRESET_PREFIX}{slug}"
+                    presets.append({
+                        "id": preset_id,
+                        "name": preset_id,
+                        "description": preset.get("description") or "",
+                        "is_preset": True,
+                    })
+
+                total = body.get("total_count", 0)
+                if len(page_data) < self.PRESETS_PAGE_SIZE or \
+                        (page + 1) * self.PRESETS_PAGE_SIZE >= total:
+                    break
+
+        except Exception as e:
+            print(f"[OpenRouter] WARN: Failed to fetch presets: {e}")
+
+        presets.sort(key=lambda p: p["id"])
+        return presets
 
     def _get_fallback_models(self) -> list:
         """Return fallback models list when API fetch fails."""
@@ -227,14 +416,14 @@ class OpenRouterProvider(LLMProvider):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        # thinking/enable_thinking forwarded to underlying models (DeepSeek, Qwen, etc.)
         payload = {
             "model": self.model,
             "messages": messages,
             "stream": False,
-            "thinking": False,
-            "enable_thinking": False,
         }
+        reasoning_override = await self._get_reasoning_override()
+        if reasoning_override:
+            payload["reasoning"] = reasoning_override
 
         client = await self._get_client()
         # 429s have their own budget (rate_limit_events): rotating to a spare
@@ -267,10 +456,19 @@ class OpenRouterProvider(LLMProvider):
                 # NOTE: a present-but-null "content" makes .get(..., "") return None,
                 # so coalesce with `or ""` to guarantee a string downstream.
                 response_text = result["choices"][0].get("message", {}).get("content") or ""
+                finish_reason = result["choices"][0].get("finish_reason")
 
                 usage = result.get("usage", {})
                 prompt_tokens = usage.get("prompt_tokens", 0)
                 completion_tokens = usage.get("completion_tokens", 0)
+                reasoning_tokens = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
+
+                if (reasoning_tokens and reasoning_override.get("enabled") is False
+                        and not self._warned_reasoning_tokens):
+                    self._warned_reasoning_tokens = True
+                    print(f"[OpenRouter] WARN: '{self.model}' still produced "
+                          f"{reasoning_tokens} reasoning tokens with reasoning disabled; "
+                          f"the upstream provider may ignore the setting")
 
                 if not response_text.strip():
                     print(f"[OpenRouter] WARN: Empty response from model '{self.model}' "
@@ -288,7 +486,8 @@ class OpenRouterProvider(LLMProvider):
                 OpenRouterProvider._session_tokens["prompt"] += prompt_tokens
                 OpenRouterProvider._session_tokens["completion"] += completion_tokens
 
-                print(f"[OpenRouter] {prompt_tokens}+{completion_tokens} tokens | "
+                reasoning_note = f" ({reasoning_tokens} reasoning)" if reasoning_tokens else ""
+                print(f"[OpenRouter] {prompt_tokens}+{completion_tokens} tokens{reasoning_note} | "
                       f"Cost: ${cost:.6f} (session: ${OpenRouterProvider._session_cost:.4f})")
 
                 if OpenRouterProvider._cost_callback:
@@ -310,7 +509,9 @@ class OpenRouterProvider(LLMProvider):
                     completion_tokens=completion_tokens,
                     context_used=prompt_tokens + completion_tokens,
                     context_limit=0,  # OpenRouter manages context internally
-                    was_truncated=False
+                    was_truncated=False,
+                    finish_reason=finish_reason,
+                    output_truncated=is_output_limit_finish(finish_reason)
                 )
 
             except httpx.TimeoutException as e:
